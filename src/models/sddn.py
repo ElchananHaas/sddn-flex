@@ -5,7 +5,17 @@ from operator import mul
 import functools
 import math
 
-class SddnSelect(nn.Module):
+class GeneratorModule(nn.Module):
+    """
+    This is a subclass of Pytorch's nn.Module with a generate method. 
+    This is needed for SDDNs where the generate pass is different from either the 
+    train or forwards pass.
+    """
+    def __init__(self):
+        super().__init__()
+    def generate(self, *args, **kwargs):
+        raise NotImplementedError("Generate method must be overridden")
+class SddnSelect(GeneratorModule):
     """
     This layer performs the selection step of Splitable Discrete Distribution Networks.
 
@@ -24,11 +34,17 @@ class SddnSelect(nn.Module):
     [(Batch size, output dimension, ...), (Batch size)]. The first is the selected output. The second is the loss.
     The loss has an additional log_2(K)/(output dimensionality) term added to account for the information provided by the choice operation.
 
+    Generate method:
+    This method selects one of the k outputs uniformly at random.
+
     """
-    def __init__(self, k, loss_function) -> None:
+    def __init__(self, k, loss_function):
         super().__init__()
         self.k = k
         self.loss_function = loss_function
+        #This maintains a running average of the pick_frequency each entry is chosen at.
+        self.pick_frequency = nn.Parameter(torch.full((k,), 20), requires_grad=False)
+        self.pick_exp_factor = .999
 
     def forward(self, x, target):
         sizes = x.size()
@@ -37,13 +53,29 @@ class SddnSelect(nn.Module):
         target = target.unsqueeze(dim = 1)
         elements_per = functools.reduce(mul, sizes[2:], 1)
         loss = self.loss_function.forward(x ,target) + math.log(self.k, 2)/elements_per
-        (min_loss, min_loss_index) = torch.min(loss, dim=1)
+        (min_loss, _) = torch.min(loss, dim=1)
+        #Since we are taking the min, decrease loss for less frequently picked items to help balance classes
+        (_, min_loss_index) = torch.min(loss * self.pick_frequency.reshape((1, self.k)), dim=1)
         min_loss_mask = F.one_hot(min_loss_index, num_classes = self.k)
+        selected_count = torch.sum(min_loss_mask, dim = 0)
+        print(selected_count)
         min_loss_mask = min_loss_mask.reshape((sizes[0], self.k, *[1 for _ in range(2, x.dim())]))
         selected = torch.sum(x * min_loss_mask, dim = 1)
+        self.pick_frequency = nn.Parameter(self.pick_frequency * self.pick_exp_factor + selected_count * (1 - self.pick_exp_factor), requires_grad=False)
+        print(self.pick_frequency)
         return (selected, min_loss)
 
-class SddnMseLoss(nn.Module):
+    def generate(self, x):
+        sizes = x.size()
+        target_shape = (sizes[0], self.k, sizes[1] // self.k, *sizes[2:])
+        x = x.reshape(target_shape)
+        selection_index = torch.randint(self.k, (sizes[0],))
+        selection_mask = F.one_hot(selection_index, num_classes = self.k)
+        selection_mask = selection_mask.reshape((sizes[0], self.k, *[1 for _ in range(2, x.dim())]))
+        selected = torch.sum(x * selection_mask, dim = 1)
+        return selected
+
+class SddnMseLoss(GeneratorModule):
     """
     This layer is an MSE loss for use in SDDN.
 
@@ -63,7 +95,7 @@ class SddnMseLoss(nn.Module):
         diff = (x - target)
         return self.weight * torch.mean(diff * diff, list(range(2, diff.dim())))
     
-class SddnMseSelect(nn.Module):
+class SddnMseSelect(GeneratorModule):
     """
     This layer is an SDDN block with MSE loss.
 
@@ -74,32 +106,44 @@ class SddnMseSelect(nn.Module):
     Same as SDDNSelect
 
     """
-    def __init__(self, k) -> None:
+    def __init__(self, k, noise) -> None:
         super().__init__()
-        self.loss = SddnMseLoss(12.5) #Multipler of 12.5 for standard deviation of 0.2
+        self.loss = SddnMseLoss(1/(2 * noise**2)) #Loss scaling based on noise scale
         self.select = SddnSelect(k, self.loss)
 
     def forward(self, x, target):
         return self.select.forward(x, target)
 
-class SddnMseBlockFC(nn.Module):
+    def generate(self, x):
+        return self.select.generate(x)
+
+class SddnMseBlockFC(GeneratorModule):
     """
     An SDDN block with fully connected layers
     """
-    def __init__(self, inout_dim, inner_dim, k) -> None:
+    def __init__(self, inout_dim, inner_dim, k, noise) -> None:
         super().__init__()
         self.project = nn.Linear(inout_dim, inner_dim)
         self.big_lin = nn.Linear(inner_dim, inner_dim)
         self.to_out = nn.Linear(inner_dim, inout_dim * k)
         self.blocks = nn.ModuleList([nn.Linear(10, 10) for i in range(10)])
-        self.sddn = SddnMseSelect(k)
-    def forward(self, x, target):
+        self.sddn = SddnMseSelect(k, noise)
+
+    def calculate_x(self, x):
         x = F.relu(self.project(x))
         x = F.relu(self.big_lin(x))
         x = self.to_out(x)
+        return x
+
+    def forward(self, x, target):
+        x = self.calculate_x(x)
         return self.sddn(x, target)
 
-class SddnFc(nn.Module):
+    def generate(self, x):
+        x = self.calculate_x(x)
+        return self.sddn.generate(x)
+
+class SddnFc(GeneratorModule):
     """
     Defines a fully connected SDDN network. 
 
@@ -112,10 +156,11 @@ class SddnFc(nn.Module):
     Inputs: input data and target output. 
     Outputs: Prediction and per-layer losses. 
     """
-    def __init__(self, num_blocks, inout_dim, inner_dim, k) -> None:
+    def __init__(self, num_blocks, inout_dim, inner_dim, k, noise) -> None:
         super().__init__()
+        self.noise = noise
         self.base = nn.Parameter(torch.zeros((1, inout_dim)))
-        self.blocks = nn.ModuleList([SddnMseBlockFC(inout_dim, inner_dim, k) for _ in range(num_blocks)])
+        self.blocks = nn.ModuleList([SddnMseBlockFC(inout_dim, inner_dim, k, noise) for _ in range(num_blocks)])
 
     def forward(self, target):
         x = self.base.expand((target.size()[0], -1))
@@ -125,3 +170,11 @@ class SddnFc(nn.Module):
             x = out[0]
             losses.append(out[1])
         return x, losses
+
+    def generate(self, batch_size):
+        with torch.no_grad():
+            x = self.base.expand((batch_size, -1))
+            for block in self.blocks:
+                x = block.generate(x)
+            x = x + torch.randn_like(x) * self.noise
+            return x
