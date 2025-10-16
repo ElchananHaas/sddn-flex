@@ -1,15 +1,3 @@
-# /// script
-# requires-python = "==3.13"
-# dependencies = [
-#     "torch",
-#     "matplotlib",
-#     "scikit-learn",
-#     "numpy",
-#     "matplotlib",
-#     "pyqt6",
-# ]
-# ///
-
 import torch
 from sklearn import datasets
 from sddn import SddnFc

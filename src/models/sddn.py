@@ -44,7 +44,7 @@ class SddnSelect(GeneratorModule):
         self.loss_function = loss_function
         #This maintains a running average of the pick_frequency each entry is chosen at.
         self.pick_frequency = nn.Parameter(torch.full((k,), 20), requires_grad=False)
-        self.pick_exp_factor = .999
+        self.pick_exp_factor = .995
 
     def forward(self, x, target):
         sizes = x.size()
@@ -95,6 +95,49 @@ class SddnMseLoss(GeneratorModule):
         diff = (x - target)
         return self.weight * torch.mean(diff * diff, list(range(2, diff.dim())))
     
+
+class SddnCrossEntropyLoss(GeneratorModule):
+    """
+    This layer is an Log Likelihood loss for use in SDDN.
+
+    Parmeters:
+    weight: a multiplier for the loss.
+
+    Inputs/Outputs:
+    Any tensors that are broadcastable to each other and have dim>=2
+
+    """
+    def __init__(self) -> None:
+        super().__init__()
+        self.loss = nn.CrossEntropyLoss(reduction='none')
+
+    def forward(self, logits, target):
+        loss = self.loss(logits, target)
+        return torch.mean(loss, list(range(2, diff.dim())))
+    
+
+class SddnCrossEntropySelect(GeneratorModule):
+    """
+    This layer is an SDDN block with Cross Entropy loss.
+
+    Parmeters:
+    k is the number of outputs that the discrete operation will pick from.
+
+    Inputs/Outputs:
+    Same as SDDNSelect
+
+    """
+    def __init__(self, k) -> None:
+        super().__init__()
+        self.loss = SddnCrossEntropyLoss() #Loss scaling based on noise scale
+        self.select = SddnSelect(k, self.loss)
+
+    def forward(self, x, target):
+        return self.select.forward(x, target)
+
+    def generate(self, x):
+        return self.select.generate(x)
+
 class SddnMseSelect(GeneratorModule):
     """
     This layer is an SDDN block with MSE loss.
@@ -126,7 +169,6 @@ class SddnMseBlockFC(GeneratorModule):
         self.project = nn.Linear(inout_dim, inner_dim)
         self.big_lin = nn.Linear(inner_dim, inner_dim)
         self.to_out = nn.Linear(inner_dim, inout_dim * k)
-        self.blocks = nn.ModuleList([nn.Linear(10, 10) for i in range(10)])
         self.sddn = SddnMseSelect(k, noise)
 
     def calculate_x(self, x):
