@@ -13,10 +13,11 @@ parser.add_argument('-k', type = int, default = 10)
 parser.add_argument('--inner-dim', type = int, default = 20)
 parser.add_argument('--num-blocks', type = int, default = 1)
 parser.add_argument('--noise', type = float, default = 0.2)
+parser.add_argument('--lr', type = float, default = 0.001)
 args = parser.parse_args()
 
 model = SddnFc(num_blocks = args.num_blocks, inout_dim = 2, inner_dim = args.inner_dim, k = args.k, noise = args.noise)
-optimizer = torch.optim.SGD(model.parameters(), lr=0.0001, momentum=0.9)
+optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
 
 def plot(model, n_samples):
     data, _ = datasets.make_moons(n_samples=n_samples, noise=args.noise)

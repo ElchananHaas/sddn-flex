@@ -22,8 +22,8 @@ class SddnSelect(GeneratorModule):
     Parmeters:
     k is the number of outputs that the discrete operation will pick from.
     loss_function is a torch module that may have learnable parameters. It 
-    must take in inputs of shape broadcastable to (batch_size, k, output dimension, ...) and have an output of shape 
-    (batch_size, k). The reduction over the other dimensions must be a mean reduction. The loss must be a minimizer of NLL,
+    must take in inputs of shape broadcastable to (batch_size * k, output dimension, ...) and have an output of shape 
+    (batch_size * k). The reduction over the other dimensions must be a mean reduction. The loss must be a minimizer of NLL,
     such as MSE for real-valued variables or cross-entropy.
 
     Inputs: 
@@ -46,23 +46,46 @@ class SddnSelect(GeneratorModule):
         self.pick_frequency = nn.Parameter(torch.full((k,), 20), requires_grad=False)
         self.pick_exp_factor = .995
 
-    def forward(self, x, target):
-        sizes = x.size()
-        target_shape = (sizes[0], self.k, sizes[1] // self.k, *sizes[2:])
-        x = x.reshape(target_shape)
-        target = target.unsqueeze(dim = 1)
-        elements_per = functools.reduce(mul, sizes[2:], 1)
-        loss = self.loss_function.forward(x ,target) + math.log(self.k, 2)/elements_per
-        (min_loss, _) = torch.min(loss, dim=1)
+    """
+    Takes in x and target. Returns a tensor of shape (Batch Size, k)
+    """
+    def compute_loss(self, x_sizes, x, target):
+        #Reshape to put all k outputs of a given item into the batch dimension.
+        batched_x = x.reshape((x_sizes[0] * self.k, x_sizes[1] // self.k, *x_sizes[2:]))
+        target = target.repeat_interleave(self.k, dim = 0)
+        #This addition to the loss accounts for information provided through the min operation.
+        provided_penalty = math.log(self.k, 2)/functools.reduce(mul, x_sizes[2:], 1)
+        loss = self.loss_function.forward(batched_x, target) + provided_penalty
+        loss = loss.reshape(x_sizes[0], self.k)
+        return loss
+
+    """
+    Takes in the loss tensor. Returns a 1 hot tensor for the minimum loss index. 
+    This also updates running averages of pick frequency if in train mode.
+    Returns a tensor of shape (Batch Size, k)
+    """
+    def process_min_loss_mask(self, loss):
         #Since we are taking the min, decrease loss for less frequently picked items to help balance classes
         (_, min_loss_index) = torch.min(loss * self.pick_frequency.reshape((1, self.k)), dim=1)
         min_loss_mask = F.one_hot(min_loss_index, num_classes = self.k)
-        selected_count = torch.sum(min_loss_mask, dim = 0)
-        print(selected_count)
+        if self.training:
+            selected_count = torch.sum(min_loss_mask, dim = 0)
+            self.pick_frequency = nn.Parameter(self.pick_frequency * self.pick_exp_factor + selected_count * (1 - self.pick_exp_factor), requires_grad=False)
+            print(self.pick_frequency)
+        return min_loss_mask
+
+    def forward(self, x, target):
+        sizes = x.size()
+        loss = self.compute_loss(sizes, x, target)
+        min_loss_mask = self.process_min_loss_mask(loss)
+        #Use the losses of the items actually picked, not just the min of the loss.
+        #This is needed if frequencies are being balanced externally.
+        min_loss = torch.sum(loss * min_loss_mask, dim = 1) 
+        #The broadcasting here is lining up k on index 1, then summing over it. 
+        #This selects the masked value.
+        x = x.reshape((sizes[0], self.k, sizes[1]//self.k, *sizes[2:]))
         min_loss_mask = min_loss_mask.reshape((sizes[0], self.k, *[1 for _ in range(2, x.dim())]))
         selected = torch.sum(x * min_loss_mask, dim = 1)
-        self.pick_frequency = nn.Parameter(self.pick_frequency * self.pick_exp_factor + selected_count * (1 - self.pick_exp_factor), requires_grad=False)
-        print(self.pick_frequency)
         return (selected, min_loss)
 
     def generate(self, x):
@@ -93,7 +116,7 @@ class SddnMseLoss(GeneratorModule):
 
     def forward(self, x, target):
         diff = (x - target)
-        return self.weight * torch.mean(diff * diff, list(range(2, diff.dim())))
+        return self.weight * torch.mean(diff * diff, list(range(1,diff.dim())))
     
 
 class SddnCrossEntropyLoss(GeneratorModule):
