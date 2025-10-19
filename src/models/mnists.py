@@ -5,7 +5,9 @@ from torch.utils.data import DataLoader
 import torchvision
 import torchvision.transforms.v2 as transforms
 from sddn import SddnCrossEntropySelect, GeneratorModule
+import matplotlib.pyplot as plt
 import argparse 
+import math
 
 class SddnCEBlockConv(GeneratorModule):
     """
@@ -61,9 +63,16 @@ class SddnConv(GeneratorModule):
 
     def generate(self, batch_size):
         with torch.no_grad():
-            x = self.base.expand((batch_size, -1))
+            x = self.base.expand((batch_size, -1, -1, -1))
             for block in self.blocks:
                 x = block.generate(x)
+            x = F.softmax(x, dim = 1)
+            #We need to put channel last for sampling
+            x = x.permute(0, 2, 3, 1)
+            size = x.size()
+            x = x.reshape(-1, size[3])
+            x = torch.multinomial(x, 1)
+            x = x.reshape(size[0:3])
             return x
 
 parser = argparse.ArgumentParser(
@@ -73,8 +82,6 @@ parser.add_argument('--dataset', choices = ['mnist'], default = 'mnist')
 parser.add_argument('-k', type = int, default = 10)
 parser.add_argument('--num-blocks', type = int, default = 1)
 args = parser.parse_args()
-
-REPORT_INTERVAL = 1
 
 transform = transforms.Compose([transforms.ToImage(), transforms.ToDtype(torch.long)])
 
@@ -95,6 +102,18 @@ train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
 model = SddnConv(num_blocks = args.num_blocks, inout_dim = 256, w = 28, h = 28, inner_dim = 256, k = args.k)
 optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
 
+REPORT_INTERVAL = 1
+DISPLAY_INTERVAL = 10
+
+def plot(model, n_samples):
+    next_square = math.ceil(n_samples**.5)
+    generated = model.generate(n_samples)
+    fig, ax = plt.subplots(next_square, next_square)
+    for i in range(generated.size()[0]):
+        data = generated[i]
+        ax[i//next_square][i % next_square].imshow(data)
+    plt.show()
+    plt.close(fig)
 
 for count, (batch, _labels) in enumerate(train_loader):
     batch = torch.squeeze(batch, dim = 1)
@@ -105,3 +124,5 @@ for count, (batch, _labels) in enumerate(train_loader):
     optimizer.step()
     if count % REPORT_INTERVAL == REPORT_INTERVAL - 1:
         print(loss.item())
+    if count % DISPLAY_INTERVAL == DISPLAY_INTERVAL - 1:
+        plot(model, 9)

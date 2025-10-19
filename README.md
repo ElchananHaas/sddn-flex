@@ -6,4 +6,9 @@ Requires uv (https://docs.astral.sh/uv/)
 
 # Usage
 Fitting simple distributions: 
-uv src/models/fit_sklearn_dataset.py
+
+    uv run src/models/fit_sklearn_dataset.py
+
+Fitting MNIST: 
+
+    uv run src/models/mnists.py

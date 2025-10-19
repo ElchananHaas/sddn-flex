@@ -39,14 +39,14 @@ class SddnSelect(GeneratorModule):
     This method selects one of the k outputs uniformly at random.
 
     """
-    def __init__(self, k, loss_function):
+    def __init__(self, k, loss_function, rebalance = False):
         super().__init__()
         self.k = k
         self.loss_function = loss_function
         #This maintains a running average of the pick_frequency each entry is chosen at.
         self.pick_frequency = nn.Parameter(torch.full((k,), 20), requires_grad=False)
         self.pick_exp_factor = .995
-
+        self.rebalance = rebalance
     """
     Takes in x and target. Returns a tensor of shape (Batch Size, k)
     """
@@ -67,9 +67,12 @@ class SddnSelect(GeneratorModule):
     """
     def process_min_loss_mask(self, loss):
         #Since we are taking the min, decrease loss for less frequently picked items to help balance classes
-        (_, min_loss_index) = torch.min(loss * self.pick_frequency.reshape((1, self.k)), dim=1)
+        if self.rebalance:
+            (_, min_loss_index) = torch.min(loss * self.pick_frequency.reshape((1, self.k)), dim=1)
+        else:
+            (_, min_loss_index) = torch.min(loss, dim=1)
         min_loss_mask = F.one_hot(min_loss_index, num_classes = self.k)
-        if self.training:
+        if self.training and self.rebalance:
             selected_count = torch.sum(min_loss_mask, dim = 0)
             self.pick_frequency = nn.Parameter(self.pick_frequency * self.pick_exp_factor + selected_count * (1 - self.pick_exp_factor), requires_grad=False)
             #print(self.pick_frequency)
