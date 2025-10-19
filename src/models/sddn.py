@@ -15,6 +15,7 @@ class GeneratorModule(nn.Module):
         super().__init__()
     def generate(self, *args, **kwargs):
         raise NotImplementedError("Generate method must be overridden")
+
 class SddnSelect(GeneratorModule):
     """
     This layer performs the selection step of Splitable Discrete Distribution Networks.
@@ -71,7 +72,7 @@ class SddnSelect(GeneratorModule):
         if self.training:
             selected_count = torch.sum(min_loss_mask, dim = 0)
             self.pick_frequency = nn.Parameter(self.pick_frequency * self.pick_exp_factor + selected_count * (1 - self.pick_exp_factor), requires_grad=False)
-            print(self.pick_frequency)
+            #print(self.pick_frequency)
         return min_loss_mask
 
     def forward(self, x, target):
@@ -136,7 +137,7 @@ class SddnCrossEntropyLoss(GeneratorModule):
 
     def forward(self, logits, target):
         loss = self.loss(logits, target)
-        return torch.mean(loss, list(range(2, diff.dim())))
+        return torch.mean(loss, list(range(1, loss.dim())))
     
 
 class SddnCrossEntropySelect(GeneratorModule):

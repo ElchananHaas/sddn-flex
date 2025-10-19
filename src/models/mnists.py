@@ -74,9 +74,10 @@ parser.add_argument('-k', type = int, default = 10)
 parser.add_argument('--num-blocks', type = int, default = 1)
 args = parser.parse_args()
 
-REPORT_INTERVAL = 10
+REPORT_INTERVAL = 1
 
-transform = transforms.ToImage()
+transform = transforms.Compose([transforms.ToImage(), transforms.ToDtype(torch.long)])
+
 train_dataset = torchvision.datasets.MNIST(
     root='./external_data', 
     train=True,
@@ -92,13 +93,15 @@ test_dataset = torchvision.datasets.MNIST(
 
 train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
 model = SddnConv(num_blocks = args.num_blocks, inout_dim = 256, w = 28, h = 28, inner_dim = 256, k = args.k)
-optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
 
-for (batch, _labels) in train_loader:
+
+for count, (batch, _labels) in enumerate(train_loader):
+    batch = torch.squeeze(batch, dim = 1)
     optimizer.zero_grad()
     (prediction, losses) = model(batch)
     loss = torch.mean(torch.stack(losses, dim=-1))
     loss.backward()
     optimizer.step()
-    if i % REPORT_INTERVAL == REPORT_INTERVAL - 1:
+    if count % REPORT_INTERVAL == REPORT_INTERVAL - 1:
         print(loss.item())
