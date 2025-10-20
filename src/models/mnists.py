@@ -103,7 +103,7 @@ model = SddnConv(num_blocks = args.num_blocks, inout_dim = 256, w = 28, h = 28, 
 optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
 
 REPORT_INTERVAL = 1
-DISPLAY_INTERVAL = 10
+DISPLAY_INTERVAL = 200
 
 def plot(model, n_samples):
     next_square = math.ceil(n_samples**.5)

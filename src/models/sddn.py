@@ -44,7 +44,7 @@ class SddnSelect(GeneratorModule):
         self.k = k
         self.loss_function = loss_function
         #This maintains a running average of the pick_frequency each entry is chosen at.
-        self.pick_frequency = nn.Parameter(torch.full((k,), 20), requires_grad=False)
+        self.pick_frequency = nn.Parameter(torch.full((k,), 7), requires_grad=False)
         self.pick_exp_factor = .98
         self.rebalance = True
     """
