@@ -44,9 +44,10 @@ class SddnSelect(GeneratorModule):
         self.k = k
         self.loss_function = loss_function
         #This maintains a running average of the pick_frequency each entry is chosen at.
-        self.pick_frequency = nn.Parameter(torch.full((k,), 7), requires_grad=False)
-        self.pick_exp_factor = .98
+        self.pick_frequency = nn.Parameter(torch.full((k,), 7.0), requires_grad=False)
+        self.pick_exp_factor = .995
         self.rebalance = True
+        self.print_count = 0
     """
     Takes in x and target. Returns a tensor of shape (Batch Size, k)
     """
@@ -74,8 +75,13 @@ class SddnSelect(GeneratorModule):
         min_loss_mask = F.one_hot(min_loss_index, num_classes = self.k)
         if self.training:
             selected_count = torch.sum(min_loss_mask, dim = 0)
-            self.pick_frequency = nn.Parameter(self.pick_frequency * self.pick_exp_factor + selected_count * (1 - self.pick_exp_factor), requires_grad=False)
-            print(self.pick_frequency)
+            self.pick_frequency *= self.pick_exp_factor
+            self.pick_frequency += (1-self.pick_exp_factor) * selected_count
+            if self.print_count > 20:
+                print(self.pick_frequency)
+                self.print_count = 0 
+            else:
+                self.print_count += 1
         return min_loss_mask
 
     def forward(self, x, target):
@@ -96,7 +102,7 @@ class SddnSelect(GeneratorModule):
         sizes = x.size()
         target_shape = (sizes[0], self.k, sizes[1] // self.k, *sizes[2:])
         x = x.reshape(target_shape)
-        selection_index = torch.randint(self.k, (sizes[0],))
+        selection_index = torch.randint(self.k, (sizes[0],), device = x.device)
         selection_mask = F.one_hot(selection_index, num_classes = self.k)
         selection_mask = selection_mask.reshape((sizes[0], self.k, *[1 for _ in range(2, x.dim())]))
         selected = torch.sum(x * selection_mask, dim = 1)

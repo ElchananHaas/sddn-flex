@@ -81,6 +81,7 @@ parser = argparse.ArgumentParser(
 parser.add_argument('--dataset', choices = ['mnist'], default = 'mnist')
 parser.add_argument('-k', type = int, default = 10)
 parser.add_argument('--num-blocks', type = int, default = 1)
+parser.add_argument('--lr', type = float, default = 0.01)
 args = parser.parse_args()
 
 transform = transforms.Compose([transforms.ToImage(), transforms.ToDtype(torch.long)])
@@ -100,29 +101,36 @@ test_dataset = torchvision.datasets.MNIST(
 
 train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
 model = SddnConv(num_blocks = args.num_blocks, inout_dim = 256, w = 28, h = 28, inner_dim = 256, k = args.k)
-optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=0.9)
 
-REPORT_INTERVAL = 1
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+model.to(device)
+
+REPORT_INTERVAL = 10
 DISPLAY_INTERVAL = 200
 
-def plot(model, n_samples):
+def plot(model, count, n_samples):
     next_square = math.ceil(n_samples**.5)
     generated = model.generate(n_samples)
     fig, ax = plt.subplots(next_square, next_square)
     for i in range(generated.size()[0]):
         data = generated[i]
-        ax[i//next_square][i % next_square].imshow(data)
-    plt.show()
+        ax[i//next_square][i % next_square].imshow(data.cpu())
+    plt.savefig(f'pictures/sampleoutputs-{count}.png')
     plt.close(fig)
 
-for count, (batch, _labels) in enumerate(train_loader):
-    batch = torch.squeeze(batch, dim = 1)
-    optimizer.zero_grad()
-    (prediction, losses) = model(batch)
-    loss = torch.mean(torch.stack(losses, dim=-1))
-    loss.backward()
-    optimizer.step()
-    if count % REPORT_INTERVAL == REPORT_INTERVAL - 1:
-        print(loss.item())
-    if count % DISPLAY_INTERVAL == DISPLAY_INTERVAL - 1:
-        plot(model, 9)
+count = 0
+while True:
+    for (batch, _labels) in train_loader:
+        batch = batch.to(device)
+        batch = torch.squeeze(batch, dim = 1)
+        optimizer.zero_grad()
+        (prediction, losses) = model(batch)
+        loss = torch.mean(torch.stack(losses, dim=-1))
+        loss.backward()
+        optimizer.step()
+        if count % REPORT_INTERVAL == REPORT_INTERVAL - 1:
+            print(loss.item())
+        if count % DISPLAY_INTERVAL == DISPLAY_INTERVAL - 1:
+            plot(model, count, 9)
+        count += 1
