@@ -28,7 +28,7 @@ class SddnSelect(GeneratorModule):
     such as MSE for real-valued variables or cross-entropy.
 
     Inputs: 
-    The first input, x, is a tensor of shape (Batch size, output dimension * k, ...). 
+    The first input, x, is a tensor of shape (Batch size, output dimension, ...). 
     The second input, target is of shape (Batch size, output dimension, ...)
 
     The output is a tuple of 2 tensors. They have shape
@@ -39,12 +39,13 @@ class SddnSelect(GeneratorModule):
     This method selects one of the k outputs uniformly at random.
 
     """
-    def __init__(self, k, loss_function):
+    def __init__(self, in_features, out_features, k, loss_function):
         super().__init__()
         self.k = k
         self.loss_function = loss_function
         #This maintains a running average of the pick_frequency each entry is chosen at.
         self.pick_frequency = nn.Parameter(torch.full((k,), 7.0), requires_grad=False)
+        self.lin = nn.Linear(in_features, out_features * k)
         self.pick_exp_factor = .995
         self.rebalance = True
         self.print_count = 0
@@ -85,6 +86,7 @@ class SddnSelect(GeneratorModule):
         return min_loss_mask
 
     def forward(self, x, target):
+        x = self.lin(x)
         sizes = x.size()
         loss = self.compute_loss(sizes, x, target)
         min_loss_mask = self.process_min_loss_mask(loss)
@@ -99,6 +101,7 @@ class SddnSelect(GeneratorModule):
         return (selected, min_loss)
 
     def generate(self, x):
+        x = self.lin(x)
         sizes = x.size()
         target_shape = (sizes[0], self.k, sizes[1] // self.k, *sizes[2:])
         x = x.reshape(target_shape)
@@ -160,10 +163,10 @@ class SddnCrossEntropySelect(GeneratorModule):
     Same as SDDNSelect
 
     """
-    def __init__(self, k) -> None:
+    def __init__(self, in_features, out_features, k) -> None:
         super().__init__()
         self.loss = SddnCrossEntropyLoss() #Loss scaling based on noise scale
-        self.select = SddnSelect(k, self.loss)
+        self.select = SddnSelect(in_features, out_features, k, self.loss)
 
     def forward(self, x, target):
         return self.select.forward(x, target)
@@ -182,10 +185,10 @@ class SddnMseSelect(GeneratorModule):
     Same as SDDNSelect
 
     """
-    def __init__(self, k, noise) -> None:
+    def __init__(self, in_features, out_features, k, noise) -> None:
         super().__init__()
         self.loss = SddnMseLoss(1/(2 * noise**2)) #Loss scaling based on noise scale
-        self.select = SddnSelect(k, self.loss)
+        self.select = SddnSelect(in_features, out_features, k, self.loss)
 
     def forward(self, x, target):
         return self.select.forward(x, target)
@@ -201,13 +204,11 @@ class SddnMseBlockFC(GeneratorModule):
         super().__init__()
         self.project = nn.Linear(inout_dim, inner_dim)
         self.big_lin = nn.Linear(inner_dim, inner_dim)
-        self.to_out = nn.Linear(inner_dim, inout_dim * k)
-        self.sddn = SddnMseSelect(k, noise)
+        self.sddn = SddnMseSelect(inner_dim, inout_dim, k, noise)
 
     def calculate_x(self, x):
         x = F.relu(self.project(x))
         x = F.relu(self.big_lin(x))
-        x = self.to_out(x)
         return x
 
     def forward(self, x, target):
