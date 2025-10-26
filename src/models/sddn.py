@@ -32,7 +32,11 @@ class SddnSelect(GeneratorModule):
     The second input, target is of shape (Batch size, output dimension, ...)
 
     The output is a tuple of 2 tensors. They have shape
-    [(Batch size, output dimension, ...), (Batch size)]. The first is the selected output. The second is the loss.
+    [(Batch size, output dimension, ...), (Batch size), (Batch size)]. 
+        The first is the selected output. 
+        The second is the loss associated with prediction error to the chosen outputs. 
+        This loss is a probability weighted average for lower variance. 
+        The third is the KL divergence between the predicted output distribution and the actual output distribution.
 
     Generate method:
     TODO
@@ -44,8 +48,10 @@ class SddnSelect(GeneratorModule):
         self.loss_function = loss_function
         #This maintains a running average of the pick_frequency each entry is chosen at.
         self.pick_frequency = nn.Parameter(torch.full((k,), 7.0), requires_grad=False)
-        self.lin = nn.Linear(in_features, out_features * k)
+        self.centers = nn.Conv1d(in_features, out_features * k, 1)
+        self.selection_estimator = nn.Conv1d(in_features, k, 1)
         self.pick_exp_factor = .995
+        self.selection_target_weight = 2
         self.rebalance = True
         self.print_count = 0
 
@@ -54,17 +60,45 @@ class SddnSelect(GeneratorModule):
     """
     def compute_per_entry_loss(self, x_sizes, x, target):
         #Reshape to put all k outputs of a given item into the batch dimension.
-        batched_x = x.reshape((x_sizes[0] * self.k, x_sizes[1] // self.k, *x_sizes[2:]))
+        batched_x = x.reshape((x_sizes[0] * self.k, self.out_features, *x_sizes[2:]))
         target = target.repeat_interleave(self.k, dim = 0)
         loss = self.loss_function.forward(batched_x, target) 
         loss = loss.reshape(x_sizes[0], self.k)
         return loss
 
+    def sample_training(self, selection_weights):
+        selection_index = torch.multinomial(selection_weights, 1)
+        selection_mask = F.one_hot(selection_index, num_classes = self.k)
+        return selection_mask
+
+    def apply_selections(self, sizes, x, selections):
+        x = x.reshape((sizes[0], self.k, sizes[1]//self.k, *sizes[2:]))
+        selections = selections.reshape((sizes[0], self.k, *[1 for _ in range(2, x.dim())]))
+        selected = torch.sum(x * selections, dim = 1)
+        return selected
+    
+    def conv_layers(self, x):
+        sizes = x.size() #x is (Batch Size, in_features, image_dimensions)
+        x = x.reshape(sizes[0], sizes[1], -1)
+        centers = self.centers(x)
+        selection_estimate = torch.mean(self.selection_estimator(x), dim=2)
+        log_selection_estimate = F.log_softmax(selection_estimate, dim=1)   
+        return centers, log_selection_estimate
+    
     def sddn_v2(self, x, target):
-        sizes = x.size()
-        loss = self.compute_per_entry_loss(sizes, x, target)
-        
-    #provided_penalty = math.log(self.k, 2)/functools.reduce(mul, x_sizes[2:], 1)
+        sizes = x.size() #x is (Batch Size, in_features, ...)
+        #x will be (Batch Size, out_features * k, sequence_dimension)
+        #log_selection_estimate is now (Batch Size, k)
+        (centers, log_selection_estimate) = self.conv_layers(self) 
+        per_entry_loss = self.compute_per_entry_loss(sizes, centers, target) #(Batch Size, k)
+        log_seletion_target = F.log_softmax(per_entry_loss * self.selection_target_weight, dim=1) #(Batch Size, k)
+        selection_weights = torch.exp(log_seletion_target) #(Batch Size, k)
+        #kl_scaling = math.log(self.k, 2)/functools.reduce(mul, sizes[2:], 1)
+        selection_kl_div = torch.sum(selection_weights * (log_seletion_target - log_selection_estimate), dim = 1) #(Batch Size)
+        selections = self.sample_training(selection_weights) #(Batch Size, k) - One hots
+        output = self.apply_selections(sizes, x, selections)
+        return (output, torch.sum(per_entry_loss * selection_weights, dim=1), selection_kl_div)
+
     """
     Takes in the loss tensor. Returns a 1 hot tensor for the minimum loss index. 
     This also updates running averages of pick frequency if in train mode.
