@@ -33,10 +33,9 @@ class SddnSelect(GeneratorModule):
 
     The output is a tuple of 2 tensors. They have shape
     [(Batch size, output dimension, ...), (Batch size)]. The first is the selected output. The second is the loss.
-    The loss has an additional log_2(K)/(output dimensionality) term added to account for the information provided by the choice operation.
 
     Generate method:
-    This method selects one of the k outputs uniformly at random.
+    TODO
 
     """
     def __init__(self, in_features, out_features, k, loss_function):
@@ -49,19 +48,23 @@ class SddnSelect(GeneratorModule):
         self.pick_exp_factor = .995
         self.rebalance = True
         self.print_count = 0
+
     """
     Takes in x and target. Returns a tensor of shape (Batch Size, k)
     """
-    def compute_loss(self, x_sizes, x, target):
+    def compute_per_entry_loss(self, x_sizes, x, target):
         #Reshape to put all k outputs of a given item into the batch dimension.
         batched_x = x.reshape((x_sizes[0] * self.k, x_sizes[1] // self.k, *x_sizes[2:]))
         target = target.repeat_interleave(self.k, dim = 0)
-        #This addition to the loss accounts for information provided through the min operation.
-        provided_penalty = math.log(self.k, 2)/functools.reduce(mul, x_sizes[2:], 1)
-        loss = self.loss_function.forward(batched_x, target) + provided_penalty
+        loss = self.loss_function.forward(batched_x, target) 
         loss = loss.reshape(x_sizes[0], self.k)
         return loss
 
+    def sddn_v2(self, x, target):
+        sizes = x.size()
+        loss = self.compute_per_entry_loss(sizes, x, target)
+        
+    #provided_penalty = math.log(self.k, 2)/functools.reduce(mul, x_sizes[2:], 1)
     """
     Takes in the loss tensor. Returns a 1 hot tensor for the minimum loss index. 
     This also updates running averages of pick frequency if in train mode.
@@ -88,7 +91,7 @@ class SddnSelect(GeneratorModule):
     def forward(self, x, target):
         x = self.lin(x)
         sizes = x.size()
-        loss = self.compute_loss(sizes, x, target)
+        loss = self.compute_per_entry_loss(sizes, x, target)
         min_loss_mask = self.process_min_loss_mask(loss)
         #Use the losses of the items actually picked, not just the min of the loss.
         #This is needed if frequencies are being balanced externally.
