@@ -114,7 +114,7 @@ class SddnSelect(GeneratorModule):
         selection_kl_div = torch.sum(selection_weights * (log_seletion_target - log_selection_estimate), dim = 1) #(Batch Size)
         selections = self.sample_one_hot(selection_weights) #(Batch Size, k) - One hots
         output = self.apply_selections(sizes, centers, selections)
-        selected_loss = torch.sum(per_entry_loss * selections, dim=1) #(Batch Size)
+        selected_loss = torch.sum(per_entry_loss * selection_weights, dim=1) #(Batch Size)
         #Since we want average loss per pixel or dim, and the information from the mean is global, 
         #it needs to be dividied by the number of pixels. Since there is a KL divergence, 
         #that takes into account the effects of k
