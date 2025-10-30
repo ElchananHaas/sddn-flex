@@ -118,8 +118,8 @@ class SddnSelect(GeneratorModule):
         #Since we want average loss per pixel or dim, and the information from the mean is global, 
         #it needs to be dividied by the number of pixels. Since there is a KL divergence, 
         #that takes into account the effects of k
-        loss = selected_loss + selection_kl_div/functools.reduce(mul, centers[2], 1)
-        return (output, selected_loss, selection_kl_div)
+        loss = selected_loss + selection_kl_div/centers.size()[2]
+        return (output, loss)
 
     def generate(self, x):
         (centers, log_selection_estimate) = self.conv_layers(x) 
