@@ -39,19 +39,21 @@ class SddnSelect(GeneratorModule):
         The third is the KL divergence between the predicted output distribution and the actual output distribution.
 
     Generate method:
-    TODO
-
+        Takes in input, generates output of the same shape.
+    
     """
     def __init__(self, in_features, out_features, k, loss_function):
         super().__init__()
         self.k = k
         self.loss_function = loss_function
         #This maintains a running average of the pick_frequency each entry is chosen at.
+        self.in_features = in_features
+        self.out_features = out_features
         self.pick_frequency = nn.Parameter(torch.full((k,), 7.0), requires_grad=False)
         self.centers = nn.Conv1d(in_features, out_features * k, 1)
         self.selection_estimator = nn.Conv1d(in_features, k, 1)
-        self.pick_exp_factor = .995
-        self.selection_target_weight = 2
+        self.pick_exp_factor = .97
+        self.selection_target_weight = 5
         self.rebalance = True
         self.print_count = 0
 
@@ -66,13 +68,27 @@ class SddnSelect(GeneratorModule):
         loss = loss.reshape(x_sizes[0], self.k)
         return loss
 
-    def sample_training(self, selection_weights):
-        selection_index = torch.multinomial(selection_weights, 1)
+    def sample_one_hot(self, selection_weights):
+        selection_index = torch.multinomial(selection_weights, 1).squeeze(dim=1)
         selection_mask = F.one_hot(selection_index, num_classes = self.k)
+        if self.training:
+            self.pick_metrics(selection_mask)
         return selection_mask
 
+    def pick_metrics(self, mask):
+        selected_count = torch.sum(mask, dim = 0)
+        self.pick_frequency *= self.pick_exp_factor
+        self.pick_frequency += (1-self.pick_exp_factor) * selected_count
+        if self.print_count > 20:
+            print(self.pick_frequency)
+            self.print_count = 0 
+        else:
+            self.print_count += 1
+    """
+    Takes in x and target. Returns a tensor of shape (Batch Size, k)
+    """
     def apply_selections(self, sizes, x, selections):
-        x = x.reshape((sizes[0], self.k, sizes[1]//self.k, *sizes[2:]))
+        x = x.reshape((sizes[0], self.k, self.out_features, *sizes[2:]))
         selections = selections.reshape((sizes[0], self.k, *[1 for _ in range(2, x.dim())]))
         selected = torch.sum(x * selections, dim = 1)
         return selected
@@ -81,24 +97,30 @@ class SddnSelect(GeneratorModule):
         sizes = x.size() #x is (Batch Size, in_features, image_dimensions)
         x = x.reshape(sizes[0], sizes[1], -1)
         centers = self.centers(x)
-        selection_estimate = torch.mean(self.selection_estimator(x), dim=2)
-        log_selection_estimate = F.log_softmax(selection_estimate, dim=1)   
+        selection_logits = torch.mean(self.selection_estimator(x), dim=2)
+        log_selection_estimate = F.log_softmax(selection_logits, dim=1)   
         return centers, log_selection_estimate
     
-    def sddn_v2(self, x, target):
+    def forward(self, x, target):
         sizes = x.size() #x is (Batch Size, in_features, ...)
         #x will be (Batch Size, out_features * k, sequence_dimension)
         #log_selection_estimate is now (Batch Size, k)
-        (centers, log_selection_estimate) = self.conv_layers(self) 
+        (centers, log_selection_estimate) = self.conv_layers(x) 
         per_entry_loss = self.compute_per_entry_loss(sizes, centers, target) #(Batch Size, k)
-        log_seletion_target = F.log_softmax(per_entry_loss * self.selection_target_weight, dim=1) #(Batch Size, k)
+        log_seletion_target = F.log_softmax(per_entry_loss * -self.selection_target_weight, dim=1) #(Batch Size, k)
         selection_weights = torch.exp(log_seletion_target) #(Batch Size, k)
         #kl_scaling = math.log(self.k, 2)/functools.reduce(mul, sizes[2:], 1)
         selection_kl_div = torch.sum(selection_weights * (log_seletion_target - log_selection_estimate), dim = 1) #(Batch Size)
-        selections = self.sample_training(selection_weights) #(Batch Size, k) - One hots
-        output = self.apply_selections(sizes, x, selections)
-        return (output, torch.sum(per_entry_loss * selection_weights, dim=1), selection_kl_div)
+        selections = self.sample_one_hot(selection_weights) #(Batch Size, k) - One hots
+        output = self.apply_selections(sizes, centers, selections)
+        return (output, torch.sum(per_entry_loss * selections, dim=1), selection_kl_div)
 
+    def generate(self, x):
+        (centers, log_selection_estimate) = self.conv_layers(x) 
+        selections = self.sample_one_hot(torch.exp(log_selection_estimate)) #(Batch Size, k) - One hots
+        out = self.apply_selections(x.size(), centers, selections)
+        return out
+    
     """
     Takes in the loss tensor. Returns a 1 hot tensor for the minimum loss index. 
     This also updates running averages of pick frequency if in train mode.
@@ -111,42 +133,8 @@ class SddnSelect(GeneratorModule):
         else:
             (_, min_loss_index) = torch.min(loss, dim=1)
         min_loss_mask = F.one_hot(min_loss_index, num_classes = self.k)
-        if self.training:
-            selected_count = torch.sum(min_loss_mask, dim = 0)
-            self.pick_frequency *= self.pick_exp_factor
-            self.pick_frequency += (1-self.pick_exp_factor) * selected_count
-            if self.print_count > 20:
-                print(self.pick_frequency)
-                self.print_count = 0 
-            else:
-                self.print_count += 1
+
         return min_loss_mask
-
-    def forward(self, x, target):
-        x = self.lin(x)
-        sizes = x.size()
-        loss = self.compute_per_entry_loss(sizes, x, target)
-        min_loss_mask = self.process_min_loss_mask(loss)
-        #Use the losses of the items actually picked, not just the min of the loss.
-        #This is needed if frequencies are being balanced externally.
-        min_loss = torch.sum(loss * min_loss_mask, dim = 1) 
-        #The broadcasting here is lining up k on index 1, then summing over it. 
-        #This selects the masked value.
-        x = x.reshape((sizes[0], self.k, sizes[1]//self.k, *sizes[2:]))
-        min_loss_mask = min_loss_mask.reshape((sizes[0], self.k, *[1 for _ in range(2, x.dim())]))
-        selected = torch.sum(x * min_loss_mask, dim = 1)
-        return (selected, min_loss)
-
-    def generate(self, x):
-        x = self.lin(x)
-        sizes = x.size()
-        target_shape = (sizes[0], self.k, sizes[1] // self.k, *sizes[2:])
-        x = x.reshape(target_shape)
-        selection_index = torch.randint(self.k, (sizes[0],), device = x.device)
-        selection_mask = F.one_hot(selection_index, num_classes = self.k)
-        selection_mask = selection_mask.reshape((sizes[0], self.k, *[1 for _ in range(2, x.dim())]))
-        selected = torch.sum(x * selection_mask, dim = 1)
-        return selected
 
 class SddnMseLoss(GeneratorModule):
     """
