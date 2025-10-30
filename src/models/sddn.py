@@ -49,11 +49,9 @@ class SddnSelect(GeneratorModule):
         self.k = cfg.k
         self.loss_function = loss_function
         #This maintains a running average of the pick_frequency each entry is chosen at.
-        self.in_features = cfg.inner_dim
-        self.out_features = cfg.inout_dim
         self.pick_frequency = nn.Parameter(torch.full((cfg.k,), 7.0), requires_grad=False)
-        self.centers = nn.Conv1d(self.in_features, self.out_features * cfg.k, 1)
-        self.selection_estimator = nn.Conv1d(self.in_features, cfg.k, 1)
+        self.centers = nn.Conv1d(cfg.inner_dim, cfg.inout_dim * cfg.k, 1)
+        self.selection_estimator = nn.Conv1d(cfg.inner_dim, cfg.k, 1)
         self.pick_exp_factor = .97
         self.selection_target_weight = 5
         self.rebalance = True
@@ -64,7 +62,7 @@ class SddnSelect(GeneratorModule):
     """
     def compute_per_entry_loss(self, x_sizes, x, target):
         #Reshape to put all k outputs of a given item into the batch dimension.
-        batched_x = x.reshape((x_sizes[0] * self.k, self.out_features, *x_sizes[2:]))
+        batched_x = x.reshape((x_sizes[0] * self.k, self.cfg.inout_dim, *x_sizes[2:]))
         target = target.repeat_interleave(self.k, dim = 0)
         loss = self.loss_function.forward(batched_x, target) 
         loss = loss.reshape(x_sizes[0], self.k)
@@ -82,7 +80,9 @@ class SddnSelect(GeneratorModule):
         self.pick_frequency *= self.pick_exp_factor
         self.pick_frequency += (1-self.pick_exp_factor) * selected_count
         if self.print_count > 20:
+            torch.set_printoptions(sci_mode=False)
             print(self.pick_frequency)
+            torch.set_printoptions(sci_mode=True)
             self.print_count = 0 
         else:
             self.print_count += 1
@@ -90,7 +90,7 @@ class SddnSelect(GeneratorModule):
     Takes in x and target. Returns a tensor of shape (Batch Size, k)
     """
     def apply_selections(self, sizes, x, selections):
-        x = x.reshape((sizes[0], self.k, self.out_features, *sizes[2:]))
+        x = x.reshape((sizes[0], self.k, self.cfg.inout_dim, *sizes[2:]))
         selections = selections.reshape((sizes[0], self.k, *[1 for _ in range(2, x.dim())]))
         selected = torch.sum(x * selections, dim = 1)
         return selected
@@ -111,11 +111,15 @@ class SddnSelect(GeneratorModule):
         per_entry_loss = self.compute_per_entry_loss(sizes, centers, target) #(Batch Size, k)
         log_seletion_target = F.log_softmax(per_entry_loss * -self.selection_target_weight, dim=1) #(Batch Size, k)
         selection_weights = torch.exp(log_seletion_target) #(Batch Size, k)
-        #kl_scaling = math.log(self.k, 2)/functools.reduce(mul, sizes[2:], 1)
         selection_kl_div = torch.sum(selection_weights * (log_seletion_target - log_selection_estimate), dim = 1) #(Batch Size)
         selections = self.sample_one_hot(selection_weights) #(Batch Size, k) - One hots
         output = self.apply_selections(sizes, centers, selections)
-        return (output, torch.sum(per_entry_loss * selections, dim=1), selection_kl_div)
+        selected_loss = torch.sum(per_entry_loss * selections, dim=1) #(Batch Size)
+        #Since we want average loss per pixel or dim, and the information from the mean is global, 
+        #it needs to be dividied by the number of pixels. Since there is a KL divergence, 
+        #that takes into account the effects of k
+        loss = selected_loss + selection_kl_div/functools.reduce(mul, centers[2], 1)
+        return (output, selected_loss, selection_kl_div)
 
     def generate(self, x):
         (centers, log_selection_estimate) = self.conv_layers(x) 
