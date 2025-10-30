@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from operator import mul
 import functools
 import math
+from config import Config
 
 class GeneratorModule(nn.Module):
     """
@@ -42,16 +43,17 @@ class SddnSelect(GeneratorModule):
         Takes in input, generates output of the same shape.
     
     """
-    def __init__(self, in_features, out_features, k, loss_function):
+    def __init__(self, cfg: Config, loss_function):
         super().__init__()
-        self.k = k
+        self.cfg = cfg
+        self.k = cfg.k
         self.loss_function = loss_function
         #This maintains a running average of the pick_frequency each entry is chosen at.
-        self.in_features = in_features
-        self.out_features = out_features
-        self.pick_frequency = nn.Parameter(torch.full((k,), 7.0), requires_grad=False)
-        self.centers = nn.Conv1d(in_features, out_features * k, 1)
-        self.selection_estimator = nn.Conv1d(in_features, k, 1)
+        self.in_features = cfg.inner_dim
+        self.out_features = cfg.inout_dim
+        self.pick_frequency = nn.Parameter(torch.full((cfg.k,), 7.0), requires_grad=False)
+        self.centers = nn.Conv1d(self.in_features, self.out_features * cfg.k, 1)
+        self.selection_estimator = nn.Conv1d(self.in_features, cfg.k, 1)
         self.pick_exp_factor = .97
         self.selection_target_weight = 5
         self.rebalance = True
@@ -210,10 +212,10 @@ class SddnMseSelect(GeneratorModule):
     Same as SDDNSelect
 
     """
-    def __init__(self, in_features, out_features, k, noise) -> None:
+    def __init__(self, cfg: Config) -> None:
         super().__init__()
-        self.loss = SddnMseLoss(1/(2 * noise**2)) #Loss scaling based on noise scale
-        self.select = SddnSelect(in_features, out_features, k, self.loss)
+        self.loss = SddnMseLoss(1/(2 * cfg.noise**2)) #Loss scaling based on noise scale
+        self.select = SddnSelect(cfg, self.loss)
 
     def forward(self, x, target):
         return self.select.forward(x, target)
@@ -225,11 +227,11 @@ class SddnMseBlockFC(GeneratorModule):
     """
     An SDDN block with fully connected layers
     """
-    def __init__(self, inout_dim, inner_dim, k, noise) -> None:
+    def __init__(self, cfg: Config) -> None:
         super().__init__()
-        self.project = nn.Linear(inout_dim, inner_dim)
-        self.big_lin = nn.Linear(inner_dim, inner_dim)
-        self.sddn = SddnMseSelect(inner_dim, inout_dim, k, noise)
+        self.project = nn.Linear(cfg.inout_dim, cfg.inner_dim)
+        self.big_lin = nn.Linear(cfg.inner_dim, cfg.inner_dim)
+        self.sddn = SddnMseSelect(cfg)
 
     def calculate_x(self, x):
         x = F.relu(self.project(x))
@@ -257,11 +259,11 @@ class SddnFc(GeneratorModule):
     Inputs: input data and target output. 
     Outputs: Prediction and per-layer losses. 
     """
-    def __init__(self, num_blocks, inout_dim, inner_dim, k, noise) -> None:
+    def __init__(self, cfg: Config) -> None:
         super().__init__()
-        self.noise = noise
-        self.base = nn.Parameter(torch.zeros((1, inout_dim)))
-        self.blocks = nn.ModuleList([SddnMseBlockFC(inout_dim, inner_dim, k, noise) for _ in range(num_blocks)])
+        self.cfg = cfg
+        self.base = nn.Parameter(torch.zeros((1, cfg.inout_dim)))
+        self.blocks = nn.ModuleList([SddnMseBlockFC(cfg) for _ in range(cfg.num_blocks)])
 
     def forward(self, target):
         x = self.base.expand((target.size()[0], -1))
@@ -277,5 +279,5 @@ class SddnFc(GeneratorModule):
             x = self.base.expand((batch_size, -1))
             for block in self.blocks:
                 x = block.generate(x)
-            x = x + torch.randn_like(x) * self.noise
+            x = x + torch.randn_like(x) * self.cfg.noise
             return x
