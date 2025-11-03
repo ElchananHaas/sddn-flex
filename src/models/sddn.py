@@ -55,7 +55,7 @@ class SddnSelect(GeneratorModule):
         self.pick_exp_factor = .97
         self.selection_target_weight = 5
         self.rebalance = True
-        self.print_count = 0
+        self.check_split = 0
 
     """
     Takes in x and target. Returns a tensor of shape (Batch Size, k)
@@ -72,20 +72,42 @@ class SddnSelect(GeneratorModule):
         selection_index = torch.multinomial(selection_weights, 1).squeeze(dim=1)
         selection_mask = F.one_hot(selection_index, num_classes = self.k)
         if self.training:
-            self.pick_metrics(selection_mask)
+            self.split_metrics(selection_mask)
         return selection_mask
 
-    def pick_metrics(self, mask):
+    def split_metrics(self, mask):
         selected_count = torch.sum(mask, dim = 0)
         self.pick_frequency *= self.pick_exp_factor
         self.pick_frequency += (1-self.pick_exp_factor) * selected_count
-        if self.print_count > 20:
+        #TODO - Its probably not best to split during the forward pass.
+        #This could lead to incorrect gradients for this pass.
+        if self.check_split > 20:
+            (min_val, min_idx) = torch.min(self.pick_frequency, dim=0)
+            if min_val < self.cfg.split_threshold:
+                (_, max_idx) = torch.max(self.pick_frequency, dim=0)
+                print("Splitting!")
+                self.split(max_idx, min_idx)
             torch.set_printoptions(sci_mode=False)
             print(self.pick_frequency)
             torch.set_printoptions(sci_mode=True)
-            self.print_count = 0 
+            self.check_split = 0 
         else:
-            self.print_count += 1
+            self.check_split += 1
+
+    def split(self, source_idx, target_idx):
+        self.centers.weight.data[target_idx, :, :] = self.centers.weight[source_idx, :, :]
+        #Just copy the bias here
+        self.centers.bias.data[target_idx] = self.centers.bias[source_idx]
+    
+        self.selection_estimator.weight.data[target_idx, :, :] = self.selection_estimator.weight[source_idx, :, :]
+        #This divides the probability of choosing this one by 2.
+        self.selection_estimator.bias.data[source_idx] = self.selection_estimator.bias[source_idx] - math.log(2)
+        self.selection_estimator.bias.data[target_idx] = self.selection_estimator.bias[source_idx]
+
+        self.pick_frequency[source_idx] = self.pick_frequency[source_idx] / 2
+        self.pick_frequency[target_idx] = self.pick_frequency[source_idx]
+
+
     """
     Takes in x and target. Returns a tensor of shape (Batch Size, k)
     """

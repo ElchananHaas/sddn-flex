@@ -15,6 +15,7 @@ parser.add_argument('--num-blocks', type = int, default = 1)
 parser.add_argument('--noise', type = float, default = 0.2)
 parser.add_argument('--lr', type = float, default = 0.001)
 parser.add_argument('--inout-dim', type = int, default = 2)
+parser.add_argument('--split-threshold', type = float, default = .01)
 cfg = Config()
 parser.parse_args(namespace=cfg)
 

@@ -8,4 +8,5 @@ class Config(argparse.Namespace):
     noise: float
     lr: float
     inout_dim: int
+    split_threshold: float
     pass
