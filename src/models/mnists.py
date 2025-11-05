@@ -82,6 +82,7 @@ parser.add_argument('-k', type = int, default = 10)
 parser.add_argument('--num-blocks', type = int, default = 1)
 parser.add_argument('--lr', type = float, default = 0.01)
 parser.add_argument('--inner-dim', type = int, default = 20)
+parser.add_argument('--split-threshold', type = float, default = .1)
 cfg = Config()
 cfg.inout_dim = 256
 parser.parse_args(namespace=cfg)
@@ -118,7 +119,9 @@ def plot(model, count, n_samples):
     for i in range(generated.size()[0]):
         data = generated[i]
         ax[i//next_square][i % next_square].imshow(data.cpu())
-    plt.savefig(f'pictures/sampleoutputs-{count}.png')
+    path = f'pictures/sampleoutputs-{count}.png'
+    print(f"Writing to {path}")
+    plt.savefig(path)
     plt.close(fig)
 
 count = 0
