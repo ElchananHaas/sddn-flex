@@ -216,10 +216,10 @@ class SddnCrossEntropySelect(GeneratorModule):
     Same as SDDNSelect
 
     """
-    def __init__(self, in_features, out_features, k) -> None:
+    def __init__(self, cfg: Config) -> None:
         super().__init__()
         self.loss = SddnCrossEntropyLoss() #Loss scaling based on noise scale
-        self.select = SddnSelect(in_features, out_features, k, self.loss)
+        self.select = SddnSelect(cfg, self.loss)
 
     def forward(self, x, target):
         return self.select.forward(x, target)

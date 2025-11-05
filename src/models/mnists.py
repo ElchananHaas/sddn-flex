@@ -8,22 +8,21 @@ from sddn import SddnCrossEntropySelect, GeneratorModule
 import matplotlib.pyplot as plt
 import argparse 
 import math
+from config import Config
 
 class SddnCEBlockConv(GeneratorModule):
     """
     An SDDN block with convolutional layers. 
     """
-    def __init__(self, inout_dim, inner_dim, k) -> None:
+    def __init__(self, cfg: Config) -> None:
         super().__init__()
-        self.project = nn.Conv2d(inout_dim, inner_dim, 3, padding = 'same')
-        self.big_lin = nn.Conv2d(inner_dim, inner_dim, 3, padding = 'same')
-        self.to_out = nn.Conv2d(inner_dim, inout_dim * k, 1, padding = 'same')
-        self.sddn = SddnCrossEntropySelect(k)
+        self.project = nn.Conv2d(cfg.inout_dim, cfg.inner_dim, 3, padding = 'same')
+        self.big_lin = nn.Conv2d(cfg.inner_dim, cfg.inner_dim, 3, padding = 'same')
+        self.sddn = SddnCrossEntropySelect(cfg)
 
     def calculate_x(self, x):
         x = F.relu(self.project(x))
         x = F.relu(self.big_lin(x))
-        x = self.to_out(x)
         return x
 
     def forward(self, x, target):
@@ -47,10 +46,10 @@ class SddnConv(GeneratorModule):
     Inputs: input data and target output. 
     Outputs: Prediction and per-layer losses. 
     """
-    def __init__(self, num_blocks, inout_dim, w, h, inner_dim, k) -> None:
+    def __init__(self,  cfg: Config, w, h) -> None:
         super().__init__()
-        self.base = nn.Parameter(torch.zeros((1, inout_dim, w, h)))
-        self.blocks = nn.ModuleList([SddnCEBlockConv(inout_dim, inner_dim, k) for _ in range(num_blocks)])
+        self.base = nn.Parameter(torch.zeros((1, cfg.inout_dim, w, h)))
+        self.blocks = nn.ModuleList([SddnCEBlockConv(cfg) for _ in range(cfg.num_blocks)])
 
     def forward(self, target):
         x = self.base.expand((target.size()[0], -1, -1, -1))
@@ -82,7 +81,10 @@ parser.add_argument('--dataset', choices = ['mnist'], default = 'mnist')
 parser.add_argument('-k', type = int, default = 10)
 parser.add_argument('--num-blocks', type = int, default = 1)
 parser.add_argument('--lr', type = float, default = 0.01)
-args = parser.parse_args()
+parser.add_argument('--inner-dim', type = int, default = 20)
+cfg = Config()
+cfg.inout_dim = 256
+parser.parse_args(namespace=cfg)
 
 transform = transforms.Compose([transforms.ToImage(), transforms.ToDtype(torch.long)])
 
@@ -100,14 +102,14 @@ test_dataset = torchvision.datasets.MNIST(
 )
 
 train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-model = SddnConv(num_blocks = args.num_blocks, inout_dim = 256, w = 28, h = 28, inner_dim = 256, k = args.k)
-optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=0.9)
+model = SddnConv(cfg=cfg, w = 28, h = 28,)
+optimizer = torch.optim.SGD(model.parameters(), cfg.lr, momentum=0.9)
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 model.to(device)
 
-REPORT_INTERVAL = 10
-DISPLAY_INTERVAL = 200
+REPORT_INTERVAL = 1
+DISPLAY_INTERVAL = 20
 
 def plot(model, count, n_samples):
     next_square = math.ceil(n_samples**.5)
