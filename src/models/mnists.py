@@ -104,13 +104,13 @@ test_dataset = torchvision.datasets.MNIST(
 
 train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
 model = SddnConv(cfg=cfg, w = 28, h = 28,)
-optimizer = torch.optim.SGD(model.parameters(), cfg.lr, momentum=0.9)
+optimizer = torch.optim.AdamW(model.parameters(), cfg.lr)
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 model.to(device)
 
-REPORT_INTERVAL = 1
-DISPLAY_INTERVAL = 20
+REPORT_INTERVAL = 20
+DISPLAY_INTERVAL = 200
 
 def plot(model, count, n_samples):
     next_square = math.ceil(n_samples**.5)
