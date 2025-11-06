@@ -95,10 +95,14 @@ class SddnSelect(GeneratorModule):
             self.check_split += 1
 
     def split(self, source_idx, target_idx):
-        self.centers.weight.data[target_idx, :, :] = self.centers.weight[source_idx, :, :]
-        #Just copy the bias here
-        self.centers.bias.data[target_idx] = self.centers.bias[source_idx]
+        #Copy the entire range responsible for producing the output.
+        (target_start, target_end) = (target_idx * self.cfg.inout_dim, (target_idx + 1) * self.cfg.inout_dim)
+        (source_start, source_end) = (source_idx * self.cfg.inout_dim, (source_idx + 1) * self.cfg.inout_dim)
+        self.centers.weight.data[target_start:target_end, :, :] = self.centers.weight[source_start:source_end, :, :]
+        #Just copy the bias here.
+        self.centers.bias.data[target_start:target_end] = self.centers.bias[source_start:source_end]
     
+        #The selection estimator only has k outputs, so just copy the 1 row.
         self.selection_estimator.weight.data[target_idx, :, :] = self.selection_estimator.weight[source_idx, :, :]
         #This divides the probability of choosing this one by 2.
         self.selection_estimator.bias.data[source_idx] = self.selection_estimator.bias[source_idx] - math.log(2)
@@ -177,7 +181,6 @@ class SddnMseLoss(GeneratorModule):
     """
     def __init__(self, weight) -> None:
         super().__init__()
-        
         self.weight = weight
 
     def forward(self, x, target):
