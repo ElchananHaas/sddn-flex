@@ -209,3 +209,4 @@ __marimo__/
 external_data/
 pictures/
 !pictures/.gitkeep 
+.continue

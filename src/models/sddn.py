@@ -43,11 +43,10 @@ class SddnSelect(GeneratorModule):
         Takes in input, generates output of the same shape.
     
     """
-    def __init__(self, cfg: Config, loss_function):
+    def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
         self.k = cfg.k
-        self.loss_function = loss_function
         #This maintains a running average of the pick_frequency each entry is chosen at.
         self.pick_frequency = nn.Parameter(torch.full((cfg.k,), 7.0), requires_grad=False)
         self.centers = nn.Conv1d(cfg.inner_dim, cfg.inout_dim * cfg.k, 1)
@@ -57,6 +56,9 @@ class SddnSelect(GeneratorModule):
         self.rebalance = True
         self.check_split = 0
 
+    def loss_function(self, x, target):
+        raise NotImplementedError("loss_function method must be overridden")
+
     """
     Takes in x and target. Returns a tensor of shape (Batch Size, k)
     """
@@ -64,7 +66,7 @@ class SddnSelect(GeneratorModule):
         #Reshape to put all k outputs of a given item into the batch dimension.
         batched_x = x.reshape((x_sizes[0] * self.k, self.cfg.inout_dim, *x_sizes[2:]))
         target = target.repeat_interleave(self.k, dim = 0)
-        loss = self.loss_function.forward(batched_x, target) 
+        loss = self.loss_function(batched_x, target) 
         loss = loss.reshape(x_sizes[0], self.k)
         return loss
 
@@ -134,6 +136,7 @@ class SddnSelect(GeneratorModule):
         #x will be (Batch Size, out_features * k, sequence_dimension)
         #log_selection_estimate is now (Batch Size, k)
         (centers, log_selection_estimate) = self.conv_layers(x) 
+        #torch.Size([Batch, k, other channel dims]) torch.Size([Batch, k])
         per_entry_loss = self.compute_per_entry_loss(sizes, centers, target) #(Batch Size, k)
         log_seletion_target = F.log_softmax(per_entry_loss * -self.selection_target_weight, dim=1) #(Batch Size, k)
         selection_weights = torch.exp(log_seletion_target) #(Batch Size, k)
@@ -167,30 +170,18 @@ class SddnSelect(GeneratorModule):
         min_loss_mask = F.one_hot(min_loss_index, num_classes = self.k)
 
         return min_loss_mask
-
-class SddnMseLoss(GeneratorModule):
-    """
-    This layer is an MSE loss for use in SDDN.
-
-    Parmeters:
-    weight: a multiplier for the loss.
-
-    Inputs/Outputs:
-    Any tensors that are broadcastable to each other and have dim>=2
-
-    """
-    def __init__(self, weight) -> None:
-        super().__init__()
-        self.weight = weight
-
-    def forward(self, x, target):
-        diff = (x - target)
-        return self.weight * torch.mean(diff * diff, list(range(1,diff.dim())))
     
+#torch.Size([640, 256, 28, 28]) torch.Size([640, 28, 28])
 
-class SddnCrossEntropyLoss(GeneratorModule):
+class SddnFloatValCrossEntropySelect(SddnSelect):
     """
-    This layer is an Log Likelihood loss for use in SDDN.
+    This layer is a loss for use in SDDN.
+    It parameterizes the loss using a single floating point output. 
+    The logits are the squared difference from that value. This allows
+    for a more compact output from the model.
+
+    Additional improvements could include a mixture model instead of a
+    single mean, or parameterized variances.
 
     Parmeters:
     weight: a multiplier for the loss.
@@ -199,16 +190,21 @@ class SddnCrossEntropyLoss(GeneratorModule):
     Any tensors that are broadcastable to each other and have dim>=2
 
     """
-    def __init__(self) -> None:
-        super().__init__()
-        self.loss = nn.CrossEntropyLoss(reduction='none')
+    def __init__(self, cfg: Config) -> None:
+        super().__init__(cfg)
+        points = torch.linspace(-.5, .5, cfg.pixel_depth)
+        #Not a parameter b/c it shouldn't be learned
+        self.points = nn.Parameter(points.reshape((1, -1, 1, 1)), requires_grad=False)
+        self.weighting = nn.Parameter(torch.ones((1,)))
 
-    def forward(self, logits, target):
-        loss = self.loss(logits, target)
+    def loss_function(self, x, target):
+        diff = x - self.points
+        sqdiff = - diff * diff * self.weighting
+        logits = torch.log_softmax(sqdiff, dim = 1)
+        loss =  F.cross_entropy(logits, target, reduction='none')
         return torch.mean(loss, list(range(1, loss.dim())))
-    
 
-class SddnCrossEntropySelect(GeneratorModule):
+class SddnCrossEntropySelect(SddnSelect):
     """
     This layer is an SDDN block with Cross Entropy loss.
 
@@ -220,17 +216,13 @@ class SddnCrossEntropySelect(GeneratorModule):
 
     """
     def __init__(self, cfg: Config) -> None:
-        super().__init__()
-        self.loss = SddnCrossEntropyLoss() #Loss scaling based on noise scale
-        self.select = SddnSelect(cfg, self.loss)
+        super().__init__(cfg)
 
-    def forward(self, x, target):
-        return self.select.forward(x, target)
+    def loss_function(self, x, target):
+        loss = F.cross_entropy(x, target, reduction='none')
+        return torch.mean(loss, list(range(1, loss.dim())))
 
-    def generate(self, x):
-        return self.select.generate(x)
-
-class SddnMseSelect(GeneratorModule):
+class SddnMseSelect(SddnSelect):
     """
     This layer is an SDDN block with MSE loss.
 
@@ -242,15 +234,12 @@ class SddnMseSelect(GeneratorModule):
 
     """
     def __init__(self, cfg: Config) -> None:
-        super().__init__()
-        self.loss = SddnMseLoss(1/(2 * cfg.noise**2)) #Loss scaling based on noise scale
-        self.select = SddnSelect(cfg, self.loss)
+        super().__init__(cfg)
+        self.weight = 1/(2 * cfg.noise**2)  #Loss scaling based on noise scale
 
-    def forward(self, x, target):
-        return self.select.forward(x, target)
-
-    def generate(self, x):
-        return self.select.generate(x)
+    def loss_function(self, x, target):
+        diff = (x - target)
+        return self.weight * torch.mean(diff * diff, list(range(1,diff.dim())))
 
 class SddnMseBlockFC(GeneratorModule):
     """
@@ -310,3 +299,4 @@ class SddnFc(GeneratorModule):
                 x = block.generate(x)
             x = x + torch.randn_like(x) * self.cfg.noise
             return x
+

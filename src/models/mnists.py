@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import torchvision
 import torchvision.transforms.v2 as transforms
-from sddn import SddnCrossEntropySelect, GeneratorModule
+from sddn import SddnFloatValCrossEntropySelect, SddnCrossEntropySelect, GeneratorModule
 import matplotlib.pyplot as plt
 import argparse 
 import math
@@ -18,7 +18,7 @@ class SddnCEBlockConv(GeneratorModule):
         super().__init__()
         self.project = nn.Conv2d(cfg.inout_dim, cfg.inner_dim, 3, padding = 'same')
         self.big_lin = nn.Conv2d(cfg.inner_dim, cfg.inner_dim, 3, padding = 'same')
-        self.sddn = SddnCrossEntropySelect(cfg)
+        self.sddn = SddnFloatValCrossEntropySelect(cfg)
 
     def calculate_x(self, x):
         x = F.relu(self.project(x))
@@ -48,6 +48,7 @@ class SddnConv(GeneratorModule):
     """
     def __init__(self,  cfg: Config, w, h) -> None:
         super().__init__()
+        self.sample_gen = False
         self.base = nn.Parameter(torch.zeros((1, cfg.inout_dim, w, h)))
         self.blocks = nn.ModuleList([SddnCEBlockConv(cfg) for _ in range(cfg.num_blocks)])
 
@@ -65,13 +66,14 @@ class SddnConv(GeneratorModule):
             x = self.base.expand((batch_size, -1, -1, -1))
             for block in self.blocks:
                 x = block.generate(x)
-            x = F.softmax(x, dim = 1)
-            #We need to put channel last for sampling
+            #We need to put channel last for display
             x = x.permute(0, 2, 3, 1)
-            size = x.size()
-            x = x.reshape(-1, size[3])
-            x = torch.multinomial(x, 1)
-            x = x.reshape(size[0:3])
+            if self.sample_gen:
+                x = F.softmax(x, dim = 3)
+                size = x.size()
+                x = x.reshape(-1, size[3])
+                x = torch.multinomial(x, 1)
+                x = x.reshape(size[0:3])
             return x
 
 parser = argparse.ArgumentParser(
@@ -84,7 +86,8 @@ parser.add_argument('--lr', type = float, default = 0.01)
 parser.add_argument('--inner-dim', type = int, default = 20)
 parser.add_argument('--split-threshold', type = float, default = .1)
 cfg = Config()
-cfg.inout_dim = 256
+cfg.inout_dim = 1
+cfg.pixel_depth = 256
 parser.parse_args(namespace=cfg)
 
 transform = transforms.Compose([transforms.ToImage(), transforms.ToDtype(torch.long)])
