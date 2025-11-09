@@ -26,12 +26,10 @@ class SddnCEBlockConv(GeneratorModule):
         return x
 
     def forward(self, x, target):
-        x = self.calculate_x(x)
-        return self.sddn(x, target)
+        return self.sddn(x, self.calculate_x(x), target)
 
     def generate(self, x):
-        x = self.calculate_x(x)
-        return self.sddn.generate(x)
+        return x + self.sddn.generate(self.calculate_x(x))
 
 class SddnConv(GeneratorModule):
     """

@@ -114,13 +114,10 @@ class SddnSelect(GeneratorModule):
         self.pick_frequency[target_idx] = self.pick_frequency[source_idx]
 
 
-    """
-    Takes in x and target. Returns a tensor of shape (Batch Size, k)
-    """
-    def apply_selections(self, sizes, x, selections):
-        x = x.reshape((sizes[0], self.k, self.cfg.inout_dim, *sizes[2:]))
-        selections = selections.reshape((sizes[0], self.k, *[1 for _ in range(2, x.dim())]))
-        selected = torch.sum(x * selections, dim = 1)
+    def apply_selections(self, sizes, centers, selections):
+        centers = centers.reshape((sizes[0], self.k, self.cfg.inout_dim, *sizes[2:]))
+        selections = selections.reshape((sizes[0], self.k, *[1 for _ in range(2, centers.dim())]))
+        selected = torch.sum(centers * selections, dim = 1)
         return selected
     
     def conv_layers(self, x):
@@ -131,12 +128,12 @@ class SddnSelect(GeneratorModule):
         log_selection_estimate = F.log_softmax(selection_logits, dim=1)   
         return centers, log_selection_estimate
     
-    def forward(self, x, target):
+    def forward(self, x_orig, x, target):
         sizes = x.size() #x is (Batch Size, in_features, ...)
         #x will be (Batch Size, out_features * k, sequence_dimension)
         #log_selection_estimate is now (Batch Size, k)
-        (centers, log_selection_estimate) = self.conv_layers(x) 
-        #torch.Size([Batch, k, other channel dims]) torch.Size([Batch, k])
+        (centers, log_selection_estimate) = self.conv_layers(x) #torch.Size([Batch, k, other channel dims]) torch.Size([Batch, k])
+        centers = centers + torch.reshape(x_orig, (sizes[0], 1, -1)) #Make this a residual estimator
         per_entry_loss = self.compute_per_entry_loss(sizes, centers, target) #(Batch Size, k)
         log_seletion_target = F.log_softmax(per_entry_loss * -self.selection_target_weight, dim=1) #(Batch Size, k)
         selection_weights = torch.exp(log_seletion_target) #(Batch Size, k)
